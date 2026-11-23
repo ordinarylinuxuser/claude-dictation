@@ -66,6 +66,9 @@ PASTE_KEYS = cfg("PASTE_KEYS", "ctrl+shift+v")        # works in Konsole and Ele
 CONFIRM = cfg("CONFIRM", "1") != "0"                  # preview default if `dictate preview` was never set
 RESTORE_CLIPBOARD = cfg("RESTORE_CLIPBOARD", "0") == "1"
 MAX_SECONDS = float(cfg("MAX_SECONDS", "180"))
+# Structure mode thinks a little before laying the text out; without thinking, Haiku drops details and
+# invents closings on long dictations. "off" = no thinking at low effort (faster, ~2.5 s instead of ~4.7 s).
+STRUCTURE_EFFORT = cfg("STRUCTURE_EFFORT", "medium")
 HISTORY = cfg("HISTORY", "1") == "1"
 KEEP_AUDIO = cfg("KEEP_AUDIO", "0") == "1"
 PROJECT_MAX_AGE_H = float(cfg("PROJECT_MAX_AGE_HOURS", "24"))
@@ -236,6 +239,52 @@ class Transcriber:
 
 # ------------------------------------------------------------------ cleanup
 
+# Structure mode returns this shape, so the at-a-glance layout is guaranteed by code, not left to the model.
+STRUCTURE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "lead": {"type": "string", "description": "One or two short sentences, at most about 30 words, naming what the speaker "
+                 "asks for in general terms. No specifics: file names, steps and details belong in points."},
+        "steps": {"type": "array", "items": {"type": "string"},
+                  "description": "Actions the speaker described in a set order, one per step; otherwise empty."},
+        "points": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Two to four words, no full stop."},
+                "text": {"type": "string", "description": "One idea in one or two sentences, about 25 words."},
+                "details": {"type": "array", "items": {"type": "string"},
+                            "description": "Extra specifics for this point as short sub-points; often empty."},
+            },
+            "required": ["name", "text", "details"],
+            "additionalProperties": False,
+        }},
+        "closing": {"type": "string", "description": "The speaker's own request for feedback or ideas, if they made one; "
+                    "otherwise empty. Never invent one."},
+    },
+    "required": ["lead", "steps", "points", "closing"],
+    "additionalProperties": False,
+}
+
+
+def render_structure(data: dict) -> str:
+    """Lead, numbered steps, bold-named bullets with sub-bullets, closing; blank lines between blocks."""
+    blocks = [data.get("lead", "").strip()]
+    steps = [s.strip() for s in data.get("steps", []) if s.strip()]
+    if steps:
+        blocks.append("\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)))
+    lines = []
+    for pt in data.get("points", []):
+        name, text = pt.get("name", "").strip().rstrip(".:"), pt.get("text", "").strip()
+        if not (name or text):
+            continue
+        lines.append(f"- **{name}.** {text}" if name else f"- {text}")
+        lines += [f"  - {d.strip()}" for d in pt.get("details", []) if d.strip()]
+    if lines:
+        blocks.append("\n".join(lines))
+    blocks.append(data.get("closing", "").strip())
+    return "\n\n".join(b for b in blocks if b)
+
+
 def clean(transcript: str, context: str, mode: str = "clean") -> tuple[str, str | None]:
     """Returns (text, warning). Falls back to the raw transcript on any API problem."""
     transcript = transcript.strip()
@@ -252,13 +301,20 @@ def clean(transcript: str, context: str, mode: str = "clean") -> tuple[str, str 
     if mode != "clean":
         user += f"<mode>{mode}</mode>\n\n"
     user += f"<transcript>\n{transcript}\n</transcript>"
+    # Clean mode: no thinking, low effort (fastest; disabled thinking is accepted on Haiku 5.5 at effort <= high).
+    thinking: dict = {"type": "disabled"}
+    output_config: dict = {"effort": "low"}
+    if mode == "structure":
+        output_config["format"] = {"type": "json_schema", "schema": STRUCTURE_SCHEMA}
+        if STRUCTURE_EFFORT != "off":
+            thinking, output_config["effort"] = {"type": "adaptive"}, STRUCTURE_EFFORT
     try:
         resp = client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=4096,
+            max_tokens=8000,  # room for thinking plus the text
             system=load_system_prompt(),
-            thinking={"type": "disabled"},   # fastest; accepted on Haiku 5.5 at effort <= high
-            output_config={"effort": "low"},
+            thinking=thinking,
+            output_config=output_config,
             messages=[{"role": "user", "content": user}],
         )
     except TypeError as e:  # the SDK raises this when it finds no credentials at all
@@ -277,6 +333,11 @@ def clean(transcript: str, context: str, mode: str = "clean") -> tuple[str, str 
         return transcript, "Haiku declined to rewrite this; showing the raw transcript"
     text = "".join(b.text for b in resp.content if b.type == "text").strip()
     warning = None
+    if mode == "structure" and resp.stop_reason != "max_tokens":
+        try:
+            text = render_structure(json.loads(text))
+        except (ValueError, AttributeError, TypeError):
+            return transcript, "structure output could not be read; showing the raw transcript"
     if resp.stop_reason == "max_tokens":
         warning = "cleanup was cut off"
     elif len(text.split()) > 1.5 * len(transcript.split()) + 25:

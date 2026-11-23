@@ -68,7 +68,7 @@ Measured on this VM: 11 s clip, warm model, `beam_size=1`, int8, 8 threads:
 
 - Model `claude-haiku-5-5`, with `thinking: {type: "disabled"}` and `effort: "low"` for the lowest latency. At $0.10 / $0.50 per million tokens, one dictation with full context costs a small fraction of a cent.
 - The system prompt is in [cleanup-system-prompt.md](cleanup-system-prompt.md). Its main rule is that Haiku must **never answer** the dictation, because a spoken question is otherwise the classic failure mode. It also removes filler and false starts, applies "no wait, …" corrections, converts spoken code forms (`dash dash dry run` → `--dry-run`), corrects mis-hearings only toward glossary terms that sound similar, and never adds requirements.
-- A `structure` mode (separate hotkey) may also reorganise rambling speech into goal + constraints. A `raw` mode skips Haiku.
+- A `structure` mode (separate hotkey) lays longer dictations out at a glance: a short lead, numbered steps if you gave an order, bullets with a bold name and sub-bullets, and your closing ask. Haiku returns a fixed JSON shape and the script renders it, so the layout is guaranteed. Structure mode thinks at medium effort (about 4–6 s) because without thinking it dropped details on long dictations. `DICTATE_STRUCTURE_EFFORT=off` makes it about 2.5 s. A `raw` mode skips Haiku.
 - Safety nets: if the API fails, refuses, or has no key, you get the raw transcript with a warning in the preview. If the cleanup is much longer than what you said, the preview warns that Haiku may have answered instead of rewriting.
 
 ### Project context
