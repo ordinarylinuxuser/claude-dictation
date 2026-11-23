@@ -24,6 +24,7 @@ Configuration is through DICTATE_* environment variables; see CONFIG below.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
@@ -62,7 +63,13 @@ WHISPER_THREADS = int(cfg("WHISPER_THREADS", str(os.cpu_count() or 4)))
 LANGUAGE = cfg("LANGUAGE", "en")                      # "" = auto-detect (multilingual models)
 SOURCE = cfg("SOURCE", "")                            # PipeWire node name; "" = default source
 DELIVERY = cfg("DELIVERY", "paste")                   # paste | type | clipboard | print
-PASTE_KEYS = cfg("PASTE_KEYS", "ctrl+shift+v")        # works in Konsole and Electron/Chromium
+# "auto": Ctrl+V in GUI apps (keeps the rich HTML), Ctrl+Shift+V in terminals. Detecting the focused
+# window needs kdotool (AUR); without it, auto uses PASTE_KEYS_FALLBACK.
+PASTE_KEYS = cfg("PASTE_KEYS", "auto")
+PASTE_KEYS_FALLBACK = cfg("PASTE_KEYS_FALLBACK", "ctrl+shift+v")
+RICH_PASTE = cfg("RICH_PASTE", "1") == "1"            # also offer text/html, so editors show real lists and bold
+TERMINAL_CLASSES = ("konsole", "yakuake", "alacritty", "kitty", "foot", "wezterm", "ghostty", "terminal", "xterm",
+                    "tilix", "terminator", "warp")
 CONFIRM = cfg("CONFIRM", "1") != "0"                  # preview default if `dictate preview` was never set
 RESTORE_CLIPBOARD = cfg("RESTORE_CLIPBOARD", "0") == "1"
 MAX_SECONDS = float(cfg("MAX_SECONDS", "180"))
@@ -359,9 +366,96 @@ def ydotool_keys(combo: str) -> bool:
     return subprocess.run(["ydotool", "key", *args], capture_output=True).returncode == 0
 
 
+def _inline_html(s: str) -> str:
+    s = html.escape(s, quote=False)
+    s = re.sub(r"`([^`\n]+)`", r"<code>\1</code>", s)
+    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+
+
+_ITEM_RE = re.compile(r"^(\s*)([-*]|\d+[.)])\s+(.*)$")
+
+
+def md_to_html(md: str) -> str:
+    """The small Markdown subset the cleanup produces: paragraphs, (nested) - and 1. lists, **bold**, `code`."""
+    out = ['<meta charset="utf-8">']
+    for block in re.split(r"\n\s*\n", md.strip()):
+        lines = [l for l in block.split("\n") if l.strip()]
+        if not lines:
+            continue
+        if not _ITEM_RE.match(lines[0]):
+            out.append("<p>" + "<br>".join(_inline_html(l.strip()) for l in lines) + "</p>")
+            continue
+        items: list[list] = []
+        for l in lines:
+            m = _ITEM_RE.match(l)
+            if m:
+                items.append([len(m.group(1).expandtabs(4)), "ol" if m.group(2)[0].isdigit() else "ul", m.group(3)])
+            else:
+                items[-1][2] += " " + l.strip()
+        stack: list[tuple[int, str]] = []
+        for indent, tag, text in items:
+            if stack and indent > stack[-1][0]:
+                out.append(f"<{tag}>")
+                stack.append((indent, tag))
+            else:
+                while stack and indent < stack[-1][0]:
+                    out.append(f"</li></{stack.pop()[1]}>")
+                if stack and stack[-1][1] == tag:
+                    out.append("</li>")
+                else:
+                    if stack:
+                        out.append(f"</li></{stack.pop()[1]}>")
+                    out.append(f"<{tag}>")
+                    stack.append((indent, tag))
+            out.append(f"<li>{_inline_html(text)}")
+        while stack:
+            out.append(f"</li></{stack.pop()[1]}>")
+    return "".join(out)
+
+
+def clip_helper() -> str | None:
+    for p in (SCRIPT_DIR / "clip" / "wl-copy-multi", shutil.which("wl-copy-multi")):
+        if p and os.access(p, os.X_OK):
+            return str(p)
+    return None
+
+
 def set_clipboard(text: str) -> None:
+    """Rich (HTML + plain) through wl-copy-multi when built; plain wl-copy otherwise."""
+    helper = clip_helper() if RICH_PASTE else None
+    if helper:
+        plain = text.encode()
+        payload = b""
+        for mime in ("text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING", "TEXT"):
+            payload += mime.encode() + b"\0" + plain + b"\0"
+        payload += b"text/html\0" + md_to_html(text).encode() + b"\0"
+        proc = subprocess.Popen([helper], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True)  # keeps serving after we return
+        proc.stdin.write(payload)
+        proc.stdin.close()
+        for _ in range(20):  # wait until the compositor shows our selection
+            r = subprocess.run(["wl-paste", "--list-types"], capture_output=True, text=True, timeout=2)
+            if "text/html" in r.stdout:
+                return
+            time.sleep(0.05)
+        log("wl-copy-multi did not take the clipboard; falling back to wl-copy")
     subprocess.run(["wl-copy"], input=text.encode(), stdout=subprocess.DEVNULL,
                    stderr=subprocess.DEVNULL, check=True)
+
+
+def paste_keys() -> str:
+    if PASTE_KEYS != "auto":
+        return PASTE_KEYS
+    if not shutil.which("kdotool"):
+        return PASTE_KEYS_FALLBACK
+    try:
+        cls = subprocess.run(["kdotool", "getactivewindow", "getwindowclassname"], capture_output=True,
+                             text=True, timeout=2).stdout.strip().lower()
+    except (OSError, subprocess.SubprocessError):
+        return PASTE_KEYS_FALLBACK
+    if not cls:
+        return PASTE_KEYS_FALLBACK
+    return "ctrl+shift+v" if any(t in cls for t in TERMINAL_CLASSES) else "ctrl+v"
 
 
 def deliver(text: str, how: str, notify: Notifier) -> None:
@@ -383,12 +477,13 @@ def deliver(text: str, how: str, notify: Notifier) -> None:
         r = subprocess.run(["wl-paste", "-n"], capture_output=True, timeout=2)
         old = r.stdout if r.returncode == 0 else None
     set_clipboard(text)
-    if how == "paste" and ydotool_keys(PASTE_KEYS):
+    keys = paste_keys()
+    if how == "paste" and ydotool_keys(keys):
         if old is not None:
             time.sleep(1.0)
             subprocess.run(["wl-copy"], input=old, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return
-    notify("Copied to clipboard", f"Paste with {PASTE_KEYS.title()}", close=True)
+    notify("Copied to clipboard", f"Paste with {keys.title()}", close=True)
 
 
 def preview_enabled() -> bool:

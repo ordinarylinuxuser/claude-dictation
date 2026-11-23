@@ -81,7 +81,7 @@ Measured on this VM: 11 s clip, warm model, `beam_size=1`, int8, 8 threads:
 
 | Method | Works here? | Notes |
 |---|---|---|
-| **Clipboard + Ctrl+Shift+V via ydotool** (default `paste`) | Yes | Multi-line safe, because terminals use bracketed paste. Ctrl+Shift+V pastes in Konsole and in Electron/Chromium inputs (the desktop app). Without ydotool it copies and tells you to paste |
+| **Rich clipboard + paste via ydotool** (default `paste`) | Yes | The clipboard offers HTML and Markdown together, through `clip/wl-copy-multi` (build: `make -C clip`). The Claude desktop box takes the HTML, so you get real bullets, numbering and bold. Terminals take the Markdown, with multi-line kept by bracketed paste. The paste key follows the focused window when `kdotool` (AUR) is installed: Ctrl+V in apps, Ctrl+Shift+V in terminals. Without it, `DICTATE_PASTE_KEYS_FALLBACK` is used (default Ctrl+Shift+V, which pastes plain text in the desktop app). Without ydotool it copies and tells you to paste |
 | `kwin-type` (AUR, `DICTATE_DELIVERY=type`) | Yes (KWin 6.8.3) | Types through KWin's fake-input/libei, layout-aware. Newlines become spaces, because Enter submits in Claude Code |
 | `ydotool type` | Yes | Fallback for `type`. Sends US-layout keycodes |
 | `wtype` | **No** | KWin lacks the virtual-keyboard protocol |
@@ -148,6 +148,14 @@ python -m venv ~/.local/share/dictate/venv
 ```
 ```bash
 ln -s ~/Documents/gits/claude-dictation/dictate.py ~/.local/bin/dictate
+```
+Build the rich-paste clipboard helper. It needs `gcc`, `wayland-scanner` and `qt6-wayland` or `wayland-protocols` for the protocol file:
+```bash
+make -C ~/Documents/gits/claude-dictation/clip
+```
+Optional, to pick Ctrl+V or Ctrl+Shift+V from the focused window:
+```bash
+yay -S kdotool
 ```
 Paste support. This needs the ydotool daemon, and your user already has `/dev/uinput` access:
 ```bash

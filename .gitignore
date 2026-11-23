@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 venv/
 *.wav
+clip/wl-copy-multi
+clip/ext-data-control-v1*
