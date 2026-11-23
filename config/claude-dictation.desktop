@@ -1,0 +1,27 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Dictation
+Comment=Speak prompts for Claude Code: local Whisper plus Claude Haiku cleanup
+Icon=audio-input-microphone
+Exec=dictate toggle
+Categories=Utility;Accessibility;
+Keywords=dictation;speech;voice;claude;
+StartupNotify=false
+X-KDE-StartupNotify=false
+Actions=Structure;Cancel;NextMode;Tray;
+
+[Desktop Action Structure]
+Name=Dictate in structure mode
+Exec=dictate toggle --mode structure
+
+[Desktop Action Cancel]
+Name=Cancel dictation
+Exec=dictate cancel
+
+[Desktop Action NextMode]
+Name=Switch default mode
+Exec=dictate mode next
+
+[Desktop Action Tray]
+Name=Show tray icon
+Exec=systemctl --user start dictate-tray

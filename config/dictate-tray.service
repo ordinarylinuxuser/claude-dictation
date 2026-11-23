@@ -1,0 +1,16 @@
+# Installed by install.sh as ~/.config/systemd/user/dictate-tray.service (@REPO@ = this repo's path).
+# Uses the system python3, which has GTK and AyatanaAppIndicator; the venv doesn't.
+[Unit]
+Description=Claude Dictation tray icon
+After=graphical-session.target dictate.service
+PartOf=graphical-session.target
+
+[Service]
+EnvironmentFile=-%h/.config/dictate/env
+ExecStart=/usr/bin/python3 -I @REPO@/dictate.py tray
+# "Hide tray icon" exits cleanly and stays hidden until the next login.
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

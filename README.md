@@ -67,7 +67,7 @@ Measured on this VM: 11 s clip, warm model, `beam_size=1`, int8, 8 threads:
 ## Cleanup with Claude Haiku
 
 - Model `claude-haiku-5-5`, with `thinking: {type: "disabled"}` and `effort: "low"` for the lowest latency. At $0.10 / $0.50 per million tokens, one dictation with full context costs a small fraction of a cent.
-- The system prompt is in [cleanup-system-prompt.md](cleanup-system-prompt.md). Its main rule is that Haiku must **never answer** the dictation, because a spoken question is otherwise the classic failure mode. It also removes filler and false starts, applies "no wait, …" corrections, converts spoken code forms (`dash dash dry run` → `--dry-run`), corrects mis-hearings only toward glossary terms that sound similar, and never adds requirements.
+- The system prompt is in [claude_dictation/prompts/cleanup.md](claude_dictation/prompts/cleanup.md). Its main rule is that Haiku must **never answer** the dictation, because a spoken question is otherwise the classic failure mode. It also removes filler and false starts, applies "no wait, …" corrections, converts spoken code forms (`dash dash dry run` → `--dry-run`), corrects mis-hearings only toward glossary terms that sound similar, and never adds requirements.
 - A `structure` mode (separate hotkey) lays longer dictations out at a glance: a short lead, numbered steps if you gave an order, bullets with a bold name and sub-bullets, and your closing ask. Haiku returns a fixed JSON shape and the script renders it, so the layout is guaranteed. Structure mode thinks at medium effort (about 4–6 s) because without thinking it dropped details on long dictations. `DICTATE_STRUCTURE_EFFORT=off` makes it about 2.5 s. A `raw` mode skips Haiku.
 - Safety nets: if the API fails, refuses, or has no key, you get the raw transcript with a warning in the preview. If the cleanup is much longer than what you said, the preview warns that Haiku may have answered instead of rewriting.
 
@@ -138,110 +138,146 @@ pw-play /tmp/mic-test.wav
 ```
 Or run `/voice` in the Claude Code CLI and hold Space. If the level is low, raise "Built-in Audio" input in the VM's audio applet.
 
-### 3. VM: install
+### 3. VM: install (or update)
 
 ```bash
-python -m venv ~/.local/share/dictate/venv
-```
-```bash
-~/.local/share/dictate/venv/bin/pip install anthropic faster-whisper numpy
-```
-```bash
-ln -s ~/Documents/gits/claude-dictation/dictate.py ~/.local/bin/dictate
-```
-Build the rich-paste clipboard helper. It needs `gcc`, `wayland-scanner` and `qt6-wayland` or `wayland-protocols` for the protocol file:
-```bash
-make -C ~/Documents/gits/claude-dictation/clip
-```
-Optional, to pick Ctrl+V or Ctrl+Shift+V from the focused window:
-```bash
-yay -S kdotool
-```
-Paste support. This needs the ydotool daemon, and your user already has `/dev/uinput` access:
-```bash
-sudo pacman -S --needed ydotool
-```
-```bash
-systemctl --user enable --now ydotool
-```
-Optional, for `type` mode:
-```bash
-yay -S kwin-type
+~/Documents/gits/claude-dictation/install.sh
 ```
 
-The `toggle`, `hook` and `status` commands only use the standard library, so the symlink works with system Python. Only the daemon needs the venv.
+The installer is safe to run again, for example after pulling changes. It:
+- **Checks packages** and offers to install any that are missing with `sudo pacman`.
+- **Sets up the Python environment** in `~/.local/share/dictate/venv`, with anthropic and faster-whisper.
+- **Builds the rich-paste clipboard helper** (`clip/wl-copy-multi`).
+- **Links the `dictate` command** into `~/.local/bin`.
+- **Asks for your Anthropic API key**, stored only for dictation in `~/.config/dictate/anthropic_key`. Don't export `ANTHROPIC_API_KEY` in your shell: Claude Code would then bill that key instead of your claude.ai plan, and `/voice` would stop working.
+- **Writes a commented settings file**, `~/.config/dictate/env`.
+- **Installs and starts the user services**: `dictate` (the daemon), `dictate-tray` (the tray icon) and `ydotool`.
+- **Adds the Claude Code hooks** that track which project you're in, after backing up `~/.claude/settings.json`.
+- **Adds KDE shortcuts**, unless you already have shortcuts that run `dictate`. KDE loads new command shortcuts at login.
+- **Runs `dictate doctor`** to check the result.
 
-### 4. VM: API key, kept away from Claude Code
+Options: `--dry-run` shows the steps without changing anything, and `--no-hooks`, `--no-tray` and `--no-shortcuts` skip those parts.
 
-Create a key in the Claude Console and store it **only** for the daemon. If you export `ANTHROPIC_API_KEY` in your shell instead, Claude Code would bill that key instead of your claude.ai plan, and `/voice` would stop working.
-```bash
-install -Dm600 /dev/stdin ~/.config/dictate/anthropic_key
-```
-Paste the key, press Enter, then Ctrl+D.
+Optional extras:
+- `yay -S kdotool` picks Ctrl+V or Ctrl+Shift+V depending on the focused window.
+- `yay -S kwin-type` lets `DICTATE_DELIVERY=type` type the text instead of pasting it.
 
-Optional settings go in `~/.config/dictate/env`, for example `DICTATE_WHISPER_MODEL=large-v3-turbo` or `DICTATE_DELIVERY=type`. The full list is at the top of `dictate.py`.
+### 4. VM: everyday use
 
-### 5. VM: start the daemon
+| Default shortcut | Command | What it does |
+|---|---|---|
+| Meta+Alt+Space | `dictate toggle` | Starts and stops a dictation in the default mode |
+| Meta+Alt+S | `dictate toggle --mode structure` | Starts and stops a dictation in structure mode |
+| Meta+Alt+X | `dictate cancel` | Throws away the current recording |
+| Meta+Alt+M | `dictate mode next` | Cycles the default mode: clean, structure, raw |
+| Meta+Alt+V | `dictate repaste` | Pastes the last dictation again into the focused window |
 
-```bash
-install -Dm644 ~/Documents/gits/claude-dictation/config/dictate.service ~/.config/systemd/user/dictate.service
-```
-```bash
-systemctl --user daemon-reload && systemctl --user enable --now dictate
-```
-```bash
-journalctl --user -u dictate -f
-```
+Choose other keys at install time, for example `DICTATE_KEY_TOGGLE="Meta+Num+Ins" ./install.sh`. The variables are listed at the top of `install.sh`.
 
-### 6. VM: hotkeys
+**How a dictation flows:**
+- **Auto-stop.** The recording ends by itself after a 1.5 s pause once you've started talking, so one key press is enough. Switch it with `dictate autostop off`, or from the tray. Change the pause with `DICTATE_AUTOSTOP_SECONDS`.
+- **Keep going.** You can start the next dictation while the last one is still being transcribed or tidied up. They're processed in order, each with its own notification.
+- **The right window.** The text goes to the window that was focused when the recording stopped. If you've clicked elsewhere meanwhile, it switches back briefly to paste, then returns you to where you were. `DICTATE_FOCUS=warn` puts it on the clipboard instead, and `off` pastes wherever you are.
+- **Dead mic.** A recording of pure digital silence gets a "Microphone is silent" notice that points at the audio routing, instead of a vague "no speech".
+- **Paste again.** `dictate repaste`, Meta+Alt+V or the tray paste the last dictation into the focused window, for when it landed in the wrong place.
+- **Faster cleanup.** The connection to the API opens while you're still talking and is reused, which saves about half a second per dictation.
 
-System Settings → Keyboard → Shortcuts → **Add New → Command or Script**:
+**Tray icon.** A disc showing the mode's initial (C, S or R) and the state:
 
-| Command | Suggested key |
+| Colour | State |
 |---|---|
-| `dictate toggle` | Meta+Alt+Space |
-| `dictate toggle --mode structure` | Meta+Alt+S |
-| `dictate toggle --mode raw` | Meta+Alt+R |
-| `dictate cancel` | Meta+Alt+X |
-| `dictate preview toggle` | Meta+Alt+P (switches between preview and direct paste) |
+| Blue | Ready |
+| Red | Recording |
+| Amber, dashed ring | Working |
+| Grey, struck through | Service not running |
 
-KDE shortcuts fire on key press, so this is press-to-start, press-to-stop, not hold-to-talk. Recording stops by itself after `DICTATE_MAX_SECONDS` (default 180 s).
+Clicking the icon opens its menu:
+- **Start/stop and cancel** the current dictation, and **paste the last dictation again**.
+- **Default mode**, **preview** and **auto-stop** settings.
+- **History** and the **project glossary**, which opens or creates `.claude/dictation.md`.
+- **Restart service** and **hide the icon**.
 
-With virt-viewer, test that the shortcut reaches the VM. When virt-viewer holds the keyboard grab, keys go to the VM. If the host's KWin still catches Meta combinations, enable "Grab keys" / allow shortcut inhibition for virt-viewer, or use a key the host doesn't use, such as `Pause` or `Scroll Lock`. Avoid Ctrl+Alt combinations: Ctrl+Alt is virt-viewer's default key for releasing the grab.
+Middle-click starts or stops dictation.
 
-### 7. VM: project tracking
+**Settings from the command line:**
+- `dictate mode structure`, `dictate preview off` and `dictate autostop off` change the defaults. They persist, and the tray follows them.
+- `dictate status` shows the current state.
 
-Merge [config/claude-hooks.json](config/claude-hooks.json) into `~/.claude/settings.json`, then add `.claude/dictation.md` to projects with unusual names. Check what Haiku will see:
+**Notifications.** Every dictation uses one bubble that updates in place: Recording, Transcribing, Tidying up, then Pasted (or Copied / Cancelled / Too short).
+- Each state has a fixed title, icon and lifetime.
+- Problems ("Microphone is silent", "No speech heard", "Check the result", "Dictation failed") stay visible longer.
+- To cut down the bubbles, set `DICTATE_NOTIFY` in `~/.config/dictate/env`:
+  - `results`: skips the progress bubbles, since the tray shows them.
+  - `errors`: only problems.
+  - `none`: nothing.
+
+**Project glossary.** Add `.claude/dictation.md` to projects with unusual names. To see what Haiku is given:
 ```bash
 dictate context
 ```
 
-### 8. Test without the microphone
+**Health check.** This checks every piece. `--mic` also records 2 s and reports the level:
+```bash
+dictate doctor --mic
+```
+
+### 5. Uninstall
+
+```bash
+~/Documents/gits/claude-dictation/uninstall.sh
+```
+This removes the services, the command, the Python environment, the hooks (after a backup), and the installer's desktop entries and shortcuts. It keeps:
+- `ydotool` and your packages.
+- Shortcuts you created yourself, which it lists.
+- Your settings, API key and history. `--purge` deletes these too, after asking.
+
+`--dry-run` shows the steps without changing anything.
+
+### 6. Test without the microphone
 
 ```bash
 echo "um so like can you uh add a dash dash dry run flag to deploy dot sh" | ~/.local/share/dictate/venv/bin/python ~/Documents/gits/claude-dictation/dictate.py clean
 ```
 
-## Status of the prototype
+## Code layout
 
-Tested in this VM: model loading and transcription with timings, project and glossary detection including git branch, the hook, the daemon socket protocol, `pw-record` start/stop/cancel producing a valid 16 kHz WAV, silence detection, and the fallback paths for no key and a rejected key.
+`dictate.py` is a small launcher. The code lives in the `claude_dictation` package, one module per job:
 
-**Not tested yet:**
-- A real Haiku call (no API key in this VM), so cleanup latency and output quality are unmeasured.
-- The kdialog preview and paste with a person at the keyboard.
-- Anything on the host: the loopback config and the libvirt XML.
-- `faster-whisper` 1.2.1 failed to decode files with the installed PyAV 19, so the script reads the WAV itself with numpy.
+| Module | What it does |
+|---|---|
+| `cli.py` | The `dictate` command and its subcommands |
+| `config.py` | Paths, `DICTATE_*` settings, and the switches you change at runtime (mode, preview, auto-stop) |
+| `daemon.py` | The service: one recording at a time, finished recordings queued as jobs for a single worker |
+| `audio.py` | Recording with `pw-record`, pause detection for auto-stop, silence check, WAV loading |
+| `transcribe.py` | faster-whisper, steered by the glossary |
+| `cleanup.py` | The Haiku call with a reused client, and the structure-mode schema and layout |
+| `project.py` | The current project, its context and glossary, and the Claude Code hook |
+| `deliver.py` | Paste or type into the right window, with the paste key chosen per window |
+| `clipboard.py` | Rich (HTML + Markdown) clipboard through `clip/wl-copy-multi` |
+| `windows.py` | Focused window and switching, through `kdotool` |
+| `notify.py` | The notification table and the one-bubble-per-dictation notifier |
+| `history.py` | The dictation log |
+| `ipc.py` | Talking to the service over its socket |
+| `tray.py` | The tray icon |
+| `doctor.py` | `dictate doctor` |
+| `prompts/cleanup.md` | The cleanup system prompt |
+
+At load time the modules import only the standard library, so quick commands such as the Claude Code hook stay fast. numpy, faster-whisper, anthropic and GTK load only where they're used.
+
+Tests cover the logic that doesn't need audio or a desktop: Markdown to HTML, the structure layout, glossary terms, pause detection, paste keys and the switches. Run them with:
+```bash
+python3 -m unittest discover -s tests
+```
 
 ## Suggestions and next steps
 
 1. **Start with `/voice` to check the plumbing.** Once the VM hears the EasyEffects mic, Claude Code's built-in `/voice` works with no setup. Keep it for short replies ("yes, go ahead") and use this pipeline for real prompts.
 2. **Grow the glossary from history.** Every dictation is logged to `~/.local/state/dictate/history.jsonl` with the raw, cleaned and final text plus timings (`DICTATE_HISTORY=0` to disable). Edits you made in the preview show where Whisper or Haiku went wrong. Add those terms to `.claude/dictation.md`.
 3. **Use the history as an eval set.** Before changing the system prompt, replay 20–30 logged transcripts and compare the outputs, so a prompt change doesn't quietly start dropping details.
-4. **Silence auto-stop (VAD).** End the recording after about 1.5 s of silence, so one key press is enough.
-5. **Audio cues.** A short sound on start and stop, so you don't have to watch notifications.
-6. **True hold-to-talk.** Needs reading `/dev/input` (input group, which lets any of your processes read keystrokes), a foot pedal, or a mouse button mapped to start/stop. Toggle plus auto-stop is safer.
-7. **Streaming.** Show partial transcripts while you speak, or stream Haiku's output into the preview. This only matters for long dictations.
-8. **Privacy.** Audio never leaves the VM. Only text and the project context (your `CLAUDE.md` and glossary) go to the Anthropic API.
+4. **Audio cues.** A short sound on start and stop, so you don't have to watch notifications.
+5. **True hold-to-talk.** Needs reading `/dev/input` (input group, which lets any of your processes read keystrokes), a foot pedal, or a mouse button mapped to start/stop. Toggle plus auto-stop is safer.
+6. **Streaming.** Show partial transcripts while you speak, or stream Haiku's output into the preview. This only matters for long dictations.
+7. **Privacy.** Audio never leaves the VM. Only text and the project context (your `CLAUDE.md` and glossary) go to the Anthropic API.
 
 ## Choosing where to transcribe
 

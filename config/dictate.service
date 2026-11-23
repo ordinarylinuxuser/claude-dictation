@@ -1,13 +1,13 @@
-# VM: ~/.config/systemd/user/dictate.service
+# Installed by install.sh as ~/.config/systemd/user/dictate.service (@REPO@ = this repo's path).
 [Unit]
-Description=Dictation daemon for Claude Code (Whisper + Claude Haiku cleanup)
+Description=Claude Dictation (Whisper + Claude Haiku cleanup)
 After=pipewire.service graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
 # Holds DICTATE_* settings, e.g. DICTATE_WHISPER_MODEL=large-v3-turbo
 EnvironmentFile=-%h/.config/dictate/env
-ExecStart=%h/.local/share/dictate/venv/bin/python -I %h/Documents/gits/claude-dictation/dictate.py serve
+ExecStart=%h/.local/share/dictate/venv/bin/python -I @REPO@/dictate.py serve
 Restart=on-failure
 RestartSec=2
 
