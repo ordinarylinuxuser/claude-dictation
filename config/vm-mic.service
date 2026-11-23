@@ -1,0 +1,19 @@
+# HOST: ~/.config/systemd/user/vm-mic.service
+# "VM Mic" virtual source fed from the EasyEffects processed mic.
+# Runs as its own service instead of a pipewire.conf.d drop-in: at PipeWire startup
+# easyeffects_source doesn't exist yet, so a drop-in loopback with node.dont-fallback
+# can't find its target and unloads itself without logging anything. This service retries until EasyEffects is up.
+[Unit]
+Description=VM Mic loopback (EasyEffects -> vm_mic)
+After=pipewire.service wireplumber.service
+PartOf=pipewire.service
+
+[Service]
+ExecStart=/usr/bin/pw-loopback -n vm-mic -m "[ MONO ]" \
+  --capture-props='node.name=vm_mic.capture target.object=easyeffects_source node.passive=true node.dont-fallback=true' \
+  --playback-props='node.name=vm_mic media.class=Audio/Source node.description="VM Mic (EasyEffects)"'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=pipewire.service

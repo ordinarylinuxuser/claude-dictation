@@ -1,0 +1,12 @@
+<!-- HOST: `virsh edit <vm>`, inside <devices>. Needs libvirt >= 9.10 with QEMU's pipewire audiodev.
+     Keep your existing <sound model='ich9'> and add the <audio/> link to it.
+     For qemu:///system the QEMU process must be able to reach your PipeWire socket:
+     set user = "<your-user>" (and group) in /etc/libvirt/qemu.conf, or run the VM under qemu:///session. -->
+<sound model="ich9">
+  <audio id="1"/>
+</sound>
+<audio id="1" type="pipewire" runtimeDir="/run/user/1000">
+  <!-- name = PipeWire node to record from: "vm_mic" (loopback) or "easyeffects_source" (direct) -->
+  <input name="vm_mic" streamName="vm mic" latency="20000"/>
+  <output streamName="vm speakers" latency="20000"/>
+</audio>
